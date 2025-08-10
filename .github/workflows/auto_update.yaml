@@ -11,21 +11,27 @@ jobs:
     container: archlinux:base-devel
 
     steps:
-      - name: Checkout PKGBUILD repo
-        uses: actions/checkout@v4
-
       - name: Install tools
         run: |
           pacman -Syu --noconfirm
           pacman -S --noconfirm --needed git pacman-contrib openssh
 
-      - name: Create build user & take ownership
+      - name: Create build user & SSH
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
           useradd -m builder
-          chown -R builder:builder .
-          echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+          install -d -m 700 -o builder -g builder /home/builder/.ssh
+          echo "$AUR_SSH_PRIVATE_KEY" | sudo -u builder tee /home/builder/.ssh/id_ed25519 >/dev/null
+          sudo -u builder chmod 600 /home/builder/.ssh/id_ed25519
+          sudo -u builder ssh-keyscan -t ed25519 aur.archlinux.org >> /home/builder/.ssh/known_hosts
 
-      - name: Fetch sources (VCS) into src/
+      - name: Clone AUR repo
+        run: |
+          sudo -u builder git clone ssh://aur@aur.archlinux.org/solian-git.git aurrepo
+
+      - name: Fetch sources (VCS) into src/ (no bump)
+        working-directory: aurrepo
         run: |
           sudo -u builder rm -rf src pkg
           cp PKGBUILD PKGBUILD.bak
@@ -34,6 +40,7 @@ jobs:
 
       - name: Compute new pkgver via pkgver()
         id: ver
+        working-directory: aurrepo
         run: |
           set -e
           export srcdir="$PWD/src"
@@ -48,24 +55,15 @@ jobs:
           echo "oldver=$OLDVER" >> "$GITHUB_OUTPUT"
           echo "newver=$NEWVER" >> "$GITHUB_OUTPUT"
 
-      - name: Update PKGBUILD & .SRCINFO
+      - name: Update PKGBUILD & .SRCINFO, commit & push
         if: steps.ver.outputs.newver != steps.ver.outputs.oldver
+        working-directory: aurrepo
         run: |
           sudo -u builder sed -i "s/^pkgver=.*/pkgver=${{ steps.ver.outputs.newver }}/" PKGBUILD
           sudo -u builder makepkg --printsrcinfo > .SRCINFO
+
           sudo -u builder git config user.name  "github-actions"
           sudo -u builder git config user.email "actions@users.noreply.github.com"
           sudo -u builder git add PKGBUILD .SRCINFO
           sudo -u builder git commit -m "[BLD] pkgver: bump to ${{ steps.ver.outputs.newver }}"
-
-      - name: Push to AUR (via builder)
-        if: steps.ver.outputs.newver != steps.ver.outputs.oldver
-        env:
-          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-        run: |
-          install -d -m 700 -o builder -g builder /home/builder/.ssh
-          echo "$AUR_SSH_PRIVATE_KEY" | sudo -u builder tee /home/builder/.ssh/id_ed25519 >/dev/null
-          sudo -u builder chmod 600 /home/builder/.ssh/id_ed25519
-          sudo -u builder ssh-keyscan -t ed25519 aur.archlinux.org >> /home/builder/.ssh/known_hosts
-          sudo -u builder git remote add aur ssh://aur@aur.archlinux.org/solian-git.git || true
-          sudo -u builder git push aur HEAD:master
+          sudo -u builder git push origin master
