@@ -9,6 +9,7 @@ jobs:
   update:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
+
     steps:
       - name: Checkout PKGBUILD repo
         uses: actions/checkout@v4
@@ -26,6 +27,7 @@ jobs:
 
       - name: Fetch sources (VCS) into src/
         run: |
+          sudo -u builder rm -rf src pkg
           sudo -u builder makepkg -o --nodeps
 
       - name: Compute new pkgver via pkgver()
@@ -34,8 +36,9 @@ jobs:
         run: |
           set -e
           export srcdir="$PWD/src"
+          source PKGBUILD
           oldver="$(grep -E '^pkgver=' PKGBUILD | head -1 | cut -d= -f2)"
-          newver="$(bash -c 'source PKGBUILD; pkgver')"
+          newver="$(pkgver)"
           echo "oldver=$oldver" >> $GITHUB_OUTPUT
           echo "newver=$newver" >> $GITHUB_OUTPUT
           echo "Old: $oldver"
@@ -49,7 +52,7 @@ jobs:
           git config user.name  "github-actions"
           git config user.email "actions@users.noreply.github.com"
           git add PKGBUILD .SRCINFO
-          git commit -m "[BLD] pkgver: bump to ${{ steps.ver.outputs.newver }}" || true
+          git commit -m "[BLD] pkgver: bump to ${{ steps.ver.outputs.newver }}"
 
       - name: Push to AUR
         if: steps.ver.outputs.newver != steps.ver.outputs.oldver
@@ -57,6 +60,7 @@ jobs:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
           echo "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
