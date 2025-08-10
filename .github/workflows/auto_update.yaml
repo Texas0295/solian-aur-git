@@ -28,7 +28,9 @@ jobs:
       - name: Fetch sources (VCS) into src/
         run: |
           sudo -u builder rm -rf src pkg
+          cp PKGBUILD PKGBUILD.bak
           sudo -u builder makepkg -od --holdver
+          mv PKGBUILD.bak PKGBUILD
 
       - name: Compute new pkgver via pkgver()
         id: ver
