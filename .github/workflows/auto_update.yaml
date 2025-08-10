@@ -19,7 +19,7 @@ jobs:
           pacman -Syu --noconfirm
           pacman -S --noconfirm --needed git pacman-contrib openssh
 
-      - name: Create build user
+      - name: Create build user & take ownership
         run: |
           useradd -m builder
           chown -R builder:builder .
@@ -28,41 +28,42 @@ jobs:
       - name: Fetch sources (VCS) into src/
         run: |
           sudo -u builder rm -rf src pkg
-          sudo -u builder makepkg -o --nodeps
+          sudo -u builder makepkg -od
 
       - name: Compute new pkgver via pkgver()
         id: ver
-        shell: bash
         run: |
           set -e
           export srcdir="$PWD/src"
-          source PKGBUILD
-          oldver="$(grep -E '^pkgver=' PKGBUILD | head -1 | cut -d= -f2)"
-          newver="$(pkgver)"
-          echo "oldver=$oldver" >> $GITHUB_OUTPUT
-          echo "newver=$newver" >> $GITHUB_OUTPUT
-          echo "Old: $oldver"
-          echo "New: $newver"
+          REPO_NAME="$(awk -F= '/^_reponame=/{gsub(/"|'\''/,"",$2); print $2}' PKGBUILD)"
+          sudo -u builder git config --global --add safe.directory "$PWD/src/$REPO_NAME"
+
+          OLDVER="$(grep -E '^pkgver=' PKGBUILD | head -1 | cut -d= -f2)"
+          NEWVER=$(sudo -u builder bash -lc 'export srcdir="$PWD/src"; source PKGBUILD; pkgver')
+
+          echo "Old: $OLDVER"
+          echo "New: $NEWVER"
+          echo "oldver=$OLDVER" >> "$GITHUB_OUTPUT"
+          echo "newver=$NEWVER" >> "$GITHUB_OUTPUT"
 
       - name: Update PKGBUILD & .SRCINFO
         if: steps.ver.outputs.newver != steps.ver.outputs.oldver
         run: |
-          sed -i "s/^pkgver=.*/pkgver=${{ steps.ver.outputs.newver }}/" PKGBUILD
+          sudo -u builder sed -i "s/^pkgver=.*/pkgver=${{ steps.ver.outputs.newver }}/" PKGBUILD
           sudo -u builder makepkg --printsrcinfo > .SRCINFO
-          git config user.name  "github-actions"
-          git config user.email "actions@users.noreply.github.com"
-          git add PKGBUILD .SRCINFO
-          git commit -m "[BLD] pkgver: bump to ${{ steps.ver.outputs.newver }}"
+          sudo -u builder git config user.name  "github-actions"
+          sudo -u builder git config user.email "actions@users.noreply.github.com"
+          sudo -u builder git add PKGBUILD .SRCINFO
+          sudo -u builder git commit -m "[BLD] pkgver: bump to ${{ steps.ver.outputs.newver }}"
 
-      - name: Push to AUR
+      - name: Push to AUR (via builder)
         if: steps.ver.outputs.newver != steps.ver.outputs.oldver
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          echo "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
-          git remote add aur ssh://aur@aur.archlinux.org/solian-git.git || true
-          git push aur HEAD:master
+          install -d -m 700 -o builder -g builder /home/builder/.ssh
+          echo "$AUR_SSH_PRIVATE_KEY" | sudo -u builder tee /home/builder/.ssh/id_ed25519 >/dev/null
+          sudo -u builder chmod 600 /home/builder/.ssh/id_ed25519
+          sudo -u builder ssh-keyscan -t ed25519 aur.archlinux.org >> /home/builder/.ssh/known_hosts
+          sudo -u builder git remote add aur ssh://aur@aur.archlinux.org/solian-git.git || true
+          sudo -u builder git push aur HEAD:master
